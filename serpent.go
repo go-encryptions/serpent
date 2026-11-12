@@ -6,7 +6,8 @@
 // little-endian 32-bit words. It is NOT the reversed order of Linux's
 // "tnepres" nor of the original submission's test files.
 //
-// The implementation is bitsliced, one block at a time, in pure Go.
+// The implementation is bitsliced, in pure Go. Encrypt and Decrypt take one
+// block at a time; EncryptBlocks and DecryptBlocks (see batch.go) take four.
 package serpent
 
 import (

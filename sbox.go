@@ -361,12 +361,10 @@ func sboxD5(a, b, c, d uint32) (uint32, uint32, uint32, uint32) {
 	d ^= t0
 	t0 = ^t0
 	d ^= a
-	a = b
-	b = t0
-	t0 = d
-	d = c
-	c = t0
-	return a, b, c, d
+	// The output words are permuted: (a, b, c, d) = (b, t0, d, c). Returning
+	// them directly keeps the function under the inlining budget, which the
+	// four-block loops need so that no call spills their sixteen state words.
+	return b, t0, d, c
 }
 
 func sboxD6(a, b, c, d uint32) (uint32, uint32, uint32, uint32) {

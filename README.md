@@ -31,6 +31,8 @@ block.Decrypt(dst[:16], src[:16]) // a buffer under 16 bytes panics
 
 The contract is that of `cipher.Block`: in-place operation is allowed and short buffers panic. `serpent.BlockSize` is 16.
 
+The returned cipher also has `EncryptBlocks(dst, src []byte)` and `DecryptBlocks(dst, src []byte)`, which process every 16-byte block of `src` independently (ECB), four at a time, and are about 2.5x faster than a loop over `Encrypt`. `len(src)` must be a multiple of 16 and `dst` at least as long (otherwise they panic); `dst` and `src` must overlap entirely or not at all.
+
 ## Byte order
 
 Serpent has two byte-order conventions. This package uses the **standard** one, that of Botan, VeraCrypt and the Linux `serpent` algorithm: the key and the block are read as little-endian 32-bit words. The reversed order (Linux `tnepres`, and the original submission's test files) is not provided.
@@ -52,16 +54,16 @@ Bibliography opened for this work: the Serpent AES submission (`serpent.pdf`, se
 
 ## Performance
 
-`BenchmarkEncrypt` and `BenchmarkDecrypt` loop the block over a 4 KiB buffer, the shape of one XTS sector, with no allocation. The reference is Botan 3.14.1 (`botan speed --buf-size=4096 Serpent`, wrapped as Go benchmarks by `internal/botanbench` so that `abbench` can interleave it). Apple M4 Max (arm64), one core (`GOMAXPROCS=1`), 6 interleaved rounds by `abbench --max-load 8` (2 rounds discarded for load, per run), compared with `benchstat`; every result file holds 12 `^Benchmark` lines.
+`BenchmarkEncrypt` and `BenchmarkDecrypt` loop `Encrypt`/`Decrypt` over a 4 KiB buffer, the shape of one XTS sector; `BenchmarkEncryptBlocks` and `BenchmarkDecryptBlocks` make one `EncryptBlocks`/`DecryptBlocks` call on the same buffer. None allocates. The reference is Botan 3.14.1 (`botan speed --buf-size=4096 Serpent`, wrapped as Go benchmarks by `internal/botanbench` so that `abbench` can interleave it). Apple M4 Max (arm64), one core (`GOMAXPROCS=1`), 6 interleaved rounds by `abbench --max-load 8`, summarised with `benchstat`; every result file holds 24 `^Benchmark` lines.
 
-| 4 KiB, per call | this package | Botan, NEON (default) | Botan, scalar (`--clear-cpuid=neon`) |
+| 4 KiB, per call | this package, per block | this package, `EncryptBlocks`/`DecryptBlocks` | Botan, NEON (default) |
 |---|---|---|---|
-| Encrypt | 32.75 µs (119 MiB/s) | 15.92 µs (245 MiB/s), **2.1x faster** | 30.76 µs ± 39 %, 1.06x faster |
-| Decrypt | 29.93 µs (131 MiB/s) | 12.15 µs (321 MiB/s), **2.5x faster** | 26.87 µs ± 76 %, 1.11x faster |
+| Encrypt | 32.38 µs ± 6 % (121 MiB/s) | **12.21 µs ± 2 % (320 MiB/s)** | 15.69 µs ± 8 % (249 MiB/s) |
+| Decrypt | 29.38 µs ± 4 % (133 MiB/s) | **11.92 µs ± 2 % (328 MiB/s)** | 11.96 µs ± 5 % (327 MiB/s) |
 
-Times are per 4 KiB call, so lower is better; the "faster" figures are Botan's advantage. The scalar column was measured while the machine's load kept moving, and its spread is wide (± 39 % and ± 76 %): read it as "same order as this package", not as a precise ratio. Botan's default build uses NEON bitslicing over several blocks at once; this package runs one block at a time in scalar Go, so **it is slower than the reference**. The SIMD follow-up is [issue #2](https://github.com/go-encryptions/serpent/issues/2).
+Times are per 4 KiB call, so lower is better. The batch path is 2.7x (encrypt) and 2.5x (decrypt) faster than the per-block path, 1.28x faster than Botan's NEON build when encrypting and level with it (11.92 vs 11.96 µs, inside the noise) when decrypting. It is pure Go, with no assembly and no SIMD: `EncryptBlocks` and `DecryptBlocks` push four blocks through the rounds side by side, as sixteen separate variables, so that the processor has four independent dependency chains and the whole state stays in registers. Callers that process many blocks, such as [`go-encryptions/xts`](https://github.com/go-encryptions/xts), use it automatically.
 
-Reproduce: `go test -c -o serpent.test .`, `go test -c -o botan.test ./internal/botanbench`, then `abbench --base ./serpent.test --head ./botan.test --max-load 8 -n 6 -- -test.bench . -test.run '^$'` (add `--head-arg=-botan.clear-cpuid=neon` for the scalar column).
+Reproduce: `go test -c -o serpent.test .`, `go test -c -o botan.test ./internal/botanbench`, then `abbench --base ./serpent.test --head ./botan.test --max-load 8 -n 6 -- -test.bench . -test.run '^$'`. The two binaries are different packages, so run `benchstat` on `base.txt` and `head.txt` one at a time.
 
 ## License
 
