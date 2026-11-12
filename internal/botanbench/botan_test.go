@@ -64,3 +64,8 @@ func bench(b *testing.B, dir string) {
 
 func BenchmarkEncrypt(b *testing.B) { bench(b, "encrypt") }
 func BenchmarkDecrypt(b *testing.B) { bench(b, "decrypt") }
+
+// Botan's own speed test is a batch call, so it is also the reference for
+// serpent's EncryptBlocks and DecryptBlocks; abbench pairs benchmarks by name.
+func BenchmarkEncryptBlocks(b *testing.B) { bench(b, "encrypt") }
+func BenchmarkDecryptBlocks(b *testing.B) { bench(b, "decrypt") }
