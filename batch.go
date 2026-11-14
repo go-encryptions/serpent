@@ -22,6 +22,8 @@ func checkBlocks(dst, src []byte) {
 // src must overlap entirely or not at all.
 func (c *serpentCipher) EncryptBlocks(dst, src []byte) {
 	checkBlocks(dst, src)
+	done := c.bulkBlocks(dst, src, false)
+	src, dst = src[done:], dst[done:]
 	k := &c.rk
 	for ; len(src) >= 4*BlockSize; src, dst = src[4*BlockSize:], dst[4*BlockSize:] {
 		s, o := src[:64], dst[:64]
@@ -139,6 +141,8 @@ func (c *serpentCipher) EncryptBlocks(dst, src []byte) {
 // DecryptBlocks is EncryptBlocks for decryption.
 func (c *serpentCipher) DecryptBlocks(dst, src []byte) {
 	checkBlocks(dst, src)
+	done := c.bulkBlocks(dst, src, true)
+	src, dst = src[done:], dst[done:]
 	k := &c.rk
 	for ; len(src) >= 4*BlockSize; src, dst = src[4*BlockSize:], dst[4*BlockSize:] {
 		s, o := src[:64], dst[:64]
