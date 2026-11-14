@@ -268,12 +268,13 @@ func FuzzRoundTrip(f *testing.F) {
 	// 40 blocks: two 16-block chunks, one 8-block chunk and no tail, and
 	// 37 blocks (16 + 16 + 4 + 1) cut from the same bytes, for the vector
 	// kernels of amd64.
-	huge := make([]byte, 640)
+	huge := make([]byte, 1648) // 103 blocks: 48 + 48 + 7, and every shorter cut
 	for i := range huge {
 		huge[i] = byte(i*7 + 3)
 	}
 	f.Add(bytes.Repeat([]byte{0x5a}, 16), huge)
 	f.Add(bytes.Repeat([]byte{0x5a}, 24), huge[:37*16+5])
+	f.Add(bytes.Repeat([]byte{0x5a}, 32), huge[:62*16])
 	f.Fuzz(func(t *testing.T, key, block []byte) {
 		c, err := NewCipher(key)
 		if len(key) != 16 && len(key) != 24 && len(key) != 32 {
@@ -286,7 +287,7 @@ func FuzzRoundTrip(f *testing.F) {
 			t.Fatal(err)
 		}
 		// The batched path against block-by-block, on 0..40 fuzzed blocks.
-		n := min(len(block)/16, 40)
+		n := min(len(block)/16, 103)
 		src := block[:16*n]
 		want := make([]byte, len(src))
 		for o := 0; o < len(src); o += 16 {

@@ -7,12 +7,21 @@ import (
 	"testing"
 )
 
-// withAVX2 runs f with the vector kernels on or off, restoring the gate.
-func withAVX2(on bool, f func()) {
-	saved := useAVX2
-	useAVX2 = on
-	defer func() { useAVX2 = saved }()
+// withGates runs f with the vector kernels on or off, restoring the gates.
+func withGates(avx512, avx2 bool, f func()) {
+	s512, s2 := useAVX512, useAVX2
+	useAVX512, useAVX2 = avx512 && s512, avx2 && s2
+	defer func() { useAVX512, useAVX2 = s512, s2 }()
 	f()
+}
+
+// The variants of bulk_test.go: AVX-512 off (AVX2 only) and both off (pure
+// Go), on top of the default (everything the CPU has).
+func init() {
+	variants = append(variants,
+		variant{"avx2-only", func(f func()) { withGates(false, true, f) }},
+		variant{"pure-go", func(f func()) { withGates(false, false, f) }},
+	)
 }
 
 func skipWithoutAVX2(t *testing.T) {
@@ -22,120 +31,174 @@ func skipWithoutAVX2(t *testing.T) {
 	}
 }
 
-// With the gate off, the pure-Go four-block loops must give the oracle's
-// answer for every length: this is the path of a CPU (or an OS) without AVX2.
-func TestBulkGateOffFallsBack(t *testing.T) {
+func skipWithoutAVX512(t *testing.T) {
+	t.Helper()
+	if !hasAVX512F() {
+		t.Skip("no AVX-512F on this CPU")
+	}
+}
+
+// With every gate off, bulkBlocks does nothing and the pure-Go four-block
+// loops take every length: the path of a CPU (or an OS) without AVX2.
+func TestBulkGatesOffFallBack(t *testing.T) {
 	c := testCipher(t, 16)
-	withAVX2(false, func() {
+	withGates(false, false, func() {
 		for n := 0; n <= 40; n++ {
 			src := make([]byte, 16*n)
 			for i := range src {
 				src[i] = byte(i*5 + n)
 			}
 			if got := c.bulkBlocks(make([]byte, len(src)), src, false); got != 0 {
-				t.Fatalf("gate off: bulkBlocks did %d bytes", got)
+				t.Fatalf("gates off: bulkBlocks did %d bytes", got)
 			}
 			enc := make([]byte, len(src))
 			c.EncryptBlocks(enc, src)
 			if !bytes.Equal(enc, oracle(c, src, false)) {
-				t.Fatalf("gate off, n=%d: EncryptBlocks differs", n)
+				t.Fatalf("gates off, n=%d: EncryptBlocks differs", n)
 			}
 			dec := make([]byte, len(src))
 			c.DecryptBlocks(dec, enc)
 			if !bytes.Equal(dec, src) {
-				t.Fatalf("gate off, n=%d: DecryptBlocks differs", n)
+				t.Fatalf("gates off, n=%d: DecryptBlocks differs", n)
 			}
 		}
 	})
 }
 
-// bulkBlocks must report exactly the bytes it did: 16 blocks per x16 chunk,
-// then one x8 chunk if 8 or more blocks remain.
-func TestBulkReportsWhatItDid(t *testing.T) {
+// bulkBlocks must report exactly the bytes it did. With AVX2 only: 16-block
+// chunks, then one 8-block chunk.
+func TestBulkReportsWhatItDidAVX2(t *testing.T) {
 	skipWithoutAVX2(t)
 	c := testCipher(t, 24)
-	for n, want := range map[int]int{0: 0, 7: 0, 8: 8, 15: 8, 16: 16, 23: 16, 24: 24, 33: 32, 40: 40, 47: 40} {
-		src := make([]byte, 16*n)
-		for _, dec := range []bool{false, true} {
-			if got := c.bulkBlocks(make([]byte, len(src)), src, dec); got != 16*want {
-				t.Errorf("%d blocks dec=%v: did %d bytes, want %d", n, dec, got, 16*want)
+	withGates(false, true, func() {
+		for n, want := range map[int]int{0: 0, 7: 0, 8: 8, 15: 8, 16: 16, 23: 16, 24: 24, 33: 32, 40: 40, 47: 40} {
+			src := make([]byte, 16*n)
+			for _, dec := range []bool{false, true} {
+				if got := c.bulkBlocks(make([]byte, len(src)), src, dec); got != 16*want {
+					t.Errorf("%d blocks dec=%v: did %d bytes, want %d", n, dec, got, 16*want)
+				}
 			}
 		}
-	}
+	})
 }
 
-// Each kernel on its own, over several chunks, against the oracle: the x8 and
-// the x16 forms must agree with each other and with the one-block path, so
-// that the dispatcher is free to pick either.
+// With AVX-512 (and AVX2 below it): 48-, 32- and 16-block chunks, then the
+// AVX2 kernels take what is left of 8 or more blocks.
+func TestBulkReportsWhatItDidAVX512(t *testing.T) {
+	skipWithoutAVX512(t)
+	c := testCipher(t, 24)
+	withGates(true, true, func() {
+		for n, want := range map[int]int{
+			0: 0, 7: 0, 8: 8 * boolInt(useAVX2), 15: 8 * boolInt(useAVX2),
+			16: 16, 31: 16 + 8*boolInt(useAVX2), 32: 32, 47: 32 + 8*boolInt(useAVX2),
+			48: 48, 63: 48 + 8*boolInt(useAVX2), 64: 64, 96: 96,
+		} {
+			src := make([]byte, 16*n)
+			for _, dec := range []bool{false, true} {
+				if got := c.bulkBlocks(make([]byte, len(src)), src, dec); got != 16*want {
+					t.Errorf("%d blocks dec=%v: did %d bytes, want %d", n, dec, got, 16*want)
+				}
+			}
+		}
+	})
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// Each kernel on its own, over several chunks, against the oracle, so that
+// the dispatcher is free to pick any of them.
 func TestKernelsAgree(t *testing.T) {
 	skipWithoutAVX2(t)
 	c := testCipher(t, 32)
-	src := make([]byte, 16*48)
+	src := make([]byte, 16*96)
 	for i := range src {
 		src[i] = byte(i*11 + i>>8)
 	}
+	type kern func(rk *uint32, dst, src *byte, n int)
+	run := func(name string, k kern, chunks int, want []byte) {
+		t.Helper()
+		got := make([]byte, len(src))
+		k(&c.rk[0], &got[0], &src[0], chunks)
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s differs from the oracle", name)
+		}
+		var none [256]byte
+		k(&c.rk[0], &none[0], &src[0], 0) // n = 0 must do nothing
+		if none != [256]byte{} {
+			t.Errorf("%s: n=0 wrote output", name)
+		}
+	}
 	for _, dec := range []bool{false, true} {
 		want := oracle(c, src, dec)
-		x8 := make([]byte, len(src))
-		x16 := make([]byte, len(src))
 		if dec {
-			decryptBlocksAVX2x8(&c.rk[0], &x8[0], &src[0], 6)
-			decryptBlocksAVX2x16(&c.rk[0], &x16[0], &src[0], 3)
+			run("dec avx2 x8", decryptBlocksAVX2x8, 12, want)
+			run("dec avx2 x16", decryptBlocksAVX2x16, 6, want)
 		} else {
-			encryptBlocksAVX2x8(&c.rk[0], &x8[0], &src[0], 6)
-			encryptBlocksAVX2x16(&c.rk[0], &x16[0], &src[0], 3)
+			run("enc avx2 x8", encryptBlocksAVX2x8, 12, want)
+			run("enc avx2 x16", encryptBlocksAVX2x16, 6, want)
 		}
-		if !bytes.Equal(x8, want) {
-			t.Errorf("dec=%v: x8 kernel differs from the oracle", dec)
+		if !hasAVX512F() {
+			continue
 		}
-		if !bytes.Equal(x16, want) {
-			t.Errorf("dec=%v: x16 kernel differs from the oracle", dec)
+		if dec {
+			run("dec avx512 x16", decryptBlocksAVX512x16, 6, want)
+			run("dec avx512 x32", decryptBlocksAVX512x32, 3, want)
+			run("dec avx512 x48", decryptBlocksAVX512x48, 2, want)
+		} else {
+			run("enc avx512 x16", encryptBlocksAVX512x16, 6, want)
+			run("enc avx512 x32", encryptBlocksAVX512x32, 3, want)
+			run("enc avx512 x48", encryptBlocksAVX512x48, 2, want)
 		}
-	}
-	// n = 0 must do nothing, not loop 2^64 times.
-	var dst [128]byte
-	encryptBlocksAVX2x8(&c.rk[0], &dst[0], &src[0], 0)
-	decryptBlocksAVX2x16(&c.rk[0], &dst[0], &src[0], 0)
-	if dst != [128]byte{} {
-		t.Error("n=0 wrote output")
 	}
 }
 
-// The kernels use only Y registers and end in VZEROUPPER; this checks that
-// a Go function using SSE state around a call is not disturbed (the classic
-// AVX-SSE transition bug would show as a slowdown, not a wrong answer, so
-// what is asserted here is the answer).
-func TestHasAVX2Stable(t *testing.T) {
-	first := hasAVX2()
+func TestHasFeaturesStable(t *testing.T) {
+	first2, first512 := hasAVX2(), hasAVX512F()
 	for range 50 {
-		if hasAVX2() != first {
-			t.Fatal("hasAVX2 changed its answer")
+		if hasAVX2() != first2 || hasAVX512F() != first512 {
+			t.Fatal("a feature probe changed its answer")
 		}
 	}
-	if useAVX2 != first {
-		t.Fatalf("useAVX2 = %v, hasAVX2() = %v", useAVX2, first)
+	if useAVX2 != first2 || useAVX512 != first512 {
+		t.Fatalf("gates (%v, %v) differ from probes (%v, %v)", useAVX2, useAVX512, first2, first512)
 	}
 }
 
-// BenchmarkKernels runs the x8 and the x16 kernel over the same 4 KiB, to show
-// what interleaving two groups buys.
+// BenchmarkKernels runs every kernel over the same 4 KiB-ish buffer.
 func BenchmarkKernels(b *testing.B) {
-	if !hasAVX2() {
-		b.Skip("no AVX2")
-	}
 	c := testCipher(b, 32)
-	src := make([]byte, 4096)
-	dst := make([]byte, 4096)
-	b.Run("x8", func(b *testing.B) {
-		b.SetBytes(4096)
-		for range b.N {
-			encryptBlocksAVX2x8(&c.rk[0], &dst[0], &src[0], 4096/128)
-		}
-	})
-	b.Run("x16", func(b *testing.B) {
-		b.SetBytes(4096)
-		for range b.N {
-			encryptBlocksAVX2x16(&c.rk[0], &dst[0], &src[0], 4096/256)
-		}
-	})
+	src := make([]byte, 6144)
+	dst := make([]byte, 6144)
+	type kern func(rk *uint32, dst, src *byte, n int)
+	for _, k := range []struct {
+		name  string
+		f     kern
+		bytes int
+		need  func() bool
+	}{
+		{"avx2-x8", encryptBlocksAVX2x8, 128, hasAVX2},
+		{"avx2-x16", encryptBlocksAVX2x16, 256, hasAVX2},
+		{"avx512-x16", encryptBlocksAVX512x16, 256, hasAVX512F},
+		{"avx512-x32", encryptBlocksAVX512x32, 512, hasAVX512F},
+		{"avx512-x48", encryptBlocksAVX512x48, 768, hasAVX512F},
+	} {
+		b.Run(k.name, func(b *testing.B) {
+			if !k.need() {
+				b.Skip("feature missing")
+			}
+			chunks := 4096 / k.bytes
+			if chunks == 0 {
+				chunks = 1
+			}
+			b.SetBytes(int64(chunks * k.bytes))
+			for range b.N {
+				k.f(&c.rk[0], &dst[0], &src[0], chunks)
+			}
+		})
+	}
 }

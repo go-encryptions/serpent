@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+// A variant runs a test body with some vector kernels switched off, so that
+// every path (AVX-512, AVX2, pure Go) is tested on a machine that has them
+// all; the amd64 test file adds the variants.
+type variant struct {
+	name string
+	run  func(func())
+}
+
+var variants = []variant{{"default", func(f func()) { f() }}}
+
+func eachVariant(t *testing.T, body func(*testing.T)) {
+	t.Helper()
+	for _, v := range variants {
+		t.Run(v.name, func(t *testing.T) { v.run(func() { body(t) }) })
+	}
+}
+
 // oracle is the pure-Go single-block path: Encrypt and Decrypt one block at a
 // time. It shares the S-box source (sbox.go) with the generated kernels, so
 // the Botan known-answer vectors, which go through this path, are what vouch
@@ -41,10 +58,12 @@ func testCipher(t testing.TB, keyLen int) *serpentCipher {
 // on 16- or 32-byte alignment), out of place and in place. The guard bytes
 // around dst must stay untouched. Assembly is invisible to go cover, so this
 // is the test that holds the kernels.
-func TestBulkEveryLengthAndAlignment(t *testing.T) {
+func TestBulkEveryLengthAndAlignment(t *testing.T) { eachVariant(t, checkEveryLengthAndAlignment) }
+
+func checkEveryLengthAndAlignment(t *testing.T) {
 	c := testCipher(t, 32)
 	const guard = 0xA5
-	for n := 0; n <= 70; n++ {
+	for n := 0; n <= 100; n++ {
 		for _, so := range []int{0, 1, 7, 16, 31, 40} {
 			for _, do := range []int{0, 3, 16, 32, 33} {
 				plain := make([]byte, so+16*n+8)
@@ -94,7 +113,9 @@ func TestBulkEveryLengthAndAlignment(t *testing.T) {
 
 // TestBulkKeySizes runs a 70-block message under every key size, both ways,
 // and checks the round trip as well as the oracle.
-func TestBulkKeySizes(t *testing.T) {
+func TestBulkKeySizes(t *testing.T) { eachVariant(t, checkKeySizes) }
+
+func checkKeySizes(t *testing.T) {
 	for _, keyLen := range []int{16, 24, 32} {
 		c := testCipher(t, keyLen)
 		src := make([]byte, 16*70)
@@ -117,7 +138,9 @@ func TestBulkKeySizes(t *testing.T) {
 // A buffer larger than one call to the kernels (64 KiB on amd64) is split
 // into several; 4209 blocks is 263 chunks of 16 (256 in the first call, 7 in
 // the second) and one block for the portable loop.
-func TestBulkLargeBuffer(t *testing.T) {
+func TestBulkLargeBuffer(t *testing.T) { eachVariant(t, checkLargeBuffer) }
+
+func checkLargeBuffer(t *testing.T) {
 	c := testCipher(t, 32)
 	src := make([]byte, 16*4200+16*9)
 	for i := range src {
