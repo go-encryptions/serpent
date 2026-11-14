@@ -34,13 +34,18 @@ func (c *serpentCipher) bulkBlocks(dst, src []byte, dec bool) int {
 		return 0
 	}
 	done := 0
-	if n := len(src) / (16 * BlockSize); n > 0 {
+	// At most maxChunks chunks (64 KiB) per call: assembly without a frame
+	// cannot be preempted, so a huge buffer in one call would hold up the
+	// garbage collector's stop-the-world for its whole duration.
+	const maxChunks = 256
+	for len(src)-done >= 16*BlockSize {
+		n := min((len(src)-done)/(16*BlockSize), maxChunks)
 		if dec {
-			decryptBlocksAVX2x16(&c.rk[0], &dst[0], &src[0], n)
+			decryptBlocksAVX2x16(&c.rk[0], &dst[done], &src[done], n)
 		} else {
-			encryptBlocksAVX2x16(&c.rk[0], &dst[0], &src[0], n)
+			encryptBlocksAVX2x16(&c.rk[0], &dst[done], &src[done], n)
 		}
-		done = n * 16 * BlockSize
+		done += n * 16 * BlockSize
 	}
 	if len(src)-done >= 8*BlockSize {
 		if dec {

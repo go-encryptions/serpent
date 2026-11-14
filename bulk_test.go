@@ -5,8 +5,10 @@ import (
 	"testing"
 )
 
-// oracle is the pure-Go single-block path, which shares no code with the
-// vector kernels: Encrypt and Decrypt one block at a time.
+// oracle is the pure-Go single-block path: Encrypt and Decrypt one block at a
+// time. It shares the S-box source (sbox.go) with the generated kernels, so
+// the Botan known-answer vectors, which go through this path, are what vouch
+// for the S-boxes themselves; the vector code is held to this oracle.
 func oracle(c *serpentCipher, src []byte, dec bool) []byte {
 	out := make([]byte, len(src))
 	for o := 0; o < len(src); o += BlockSize {
@@ -109,5 +111,26 @@ func TestBulkKeySizes(t *testing.T) {
 		if !bytes.Equal(dec, src) {
 			t.Fatalf("key %d: round trip differs", keyLen)
 		}
+	}
+}
+
+// A buffer larger than one call to the kernels (64 KiB on amd64) is split
+// into several; 4209 blocks is 263 chunks of 16 (256 in the first call, 7 in
+// the second) and one block for the portable loop.
+func TestBulkLargeBuffer(t *testing.T) {
+	c := testCipher(t, 32)
+	src := make([]byte, 16*4200+16*9)
+	for i := range src {
+		src[i] = byte(i*131 + i>>9)
+	}
+	want := oracle(c, src, false)
+	got := make([]byte, len(src))
+	c.EncryptBlocks(got, src)
+	if !bytes.Equal(got, want) {
+		t.Fatal("EncryptBlocks differs on a large buffer")
+	}
+	c.DecryptBlocks(got, want)
+	if !bytes.Equal(got, src) {
+		t.Fatal("DecryptBlocks differs on a large buffer")
 	}
 }

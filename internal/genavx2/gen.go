@@ -434,7 +434,7 @@ func kernel(sb map[string]*sbox, name string, dec bool, groups int) (*emit.Funct
 		}
 	}
 	var spare []amd64.YReg
-	used := map[amd64.YReg]bool{}
+	used := map[amd64.YReg]bool{onesReg: true} // the constant must survive to the next iteration
 	for _, r := range outRegs {
 		used[r] = true
 	}
