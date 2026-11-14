@@ -11,9 +11,10 @@ permissions:
   contents: read
 
 env:
-  # Coverage floor for the cipher package. Serpent is plain Go with no
-  # per-architecture code, so every target holds 100% of statements and
-  # produces the same ciphertext (the Botan vectors are checked on each).
+  # Coverage floor for the cipher package. amd64 has AVX2 kernels (generated,
+  # in assembly, which go cover cannot see: the oracle tests in bulk_test.go
+  # hold them); every target holds 100% of the Go statements and produces the
+  # same ciphertext (the Botan vectors are checked on each).
   # internal/genbotan and internal/botanbench are development tools that need
   # the Botan command line; they are tested but not gated.
   COVER_MIN: "100.0"
@@ -46,6 +47,11 @@ jobs:
         run: go build ./...
       - name: test tools
         run: go test ./internal/...
+      - name: test the kernel generator (its own module) and its drift check
+        run: go test ./...
+        working-directory: internal/genavx2
+      - name: test the portable path (purego)
+        run: go test -tags purego .
       - name: test (race + coverage gate)
         run: |
           set -euo pipefail

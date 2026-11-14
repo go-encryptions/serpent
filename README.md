@@ -31,7 +31,7 @@ block.Decrypt(dst[:16], src[:16]) // a buffer under 16 bytes panics
 
 The contract is that of `cipher.Block`: in-place operation is allowed and short buffers panic. `serpent.BlockSize` is 16.
 
-The returned cipher also has `EncryptBlocks(dst, src []byte)` and `DecryptBlocks(dst, src []byte)`, which process every 16-byte block of `src` independently (ECB), four at a time, and are about 2.5x faster than a loop over `Encrypt`. `len(src)` must be a multiple of 16 and `dst` at least as long (otherwise they panic); `dst` and `src` must overlap entirely or not at all.
+The returned cipher also has `EncryptBlocks(dst, src []byte)` and `DecryptBlocks(dst, src []byte)`, which process every 16-byte block of `src` independently (ECB), four at a time in pure Go, and sixteen or eight at a time with AVX2 kernels on amd64 (see Performance), and are 2.5x (arm64, pure Go) to 8.5x (amd64, AVX2) faster than a loop over `Encrypt`. `len(src)` must be a multiple of 16 and `dst` at least as long (otherwise they panic); `dst` and `src` must overlap entirely or not at all.
 
 ## Byte order
 
@@ -61,7 +61,20 @@ Bibliography opened for this work: the Serpent AES submission (`serpent.pdf`, se
 | Encrypt | 32.38 µs ± 6 % (121 MiB/s) | **12.21 µs ± 2 % (320 MiB/s)** | 15.69 µs ± 8 % (249 MiB/s) |
 | Decrypt | 29.38 µs ± 4 % (133 MiB/s) | **11.92 µs ± 2 % (328 MiB/s)** | 11.96 µs ± 5 % (327 MiB/s) |
 
-Times are per 4 KiB call, so lower is better. The batch path is 2.7x (encrypt) and 2.5x (decrypt) faster than the per-block path, 1.28x faster than Botan's NEON build when encrypting and level with it (11.92 vs 11.96 µs, inside the noise) when decrypting. It is pure Go, with no assembly and no SIMD: `EncryptBlocks` and `DecryptBlocks` push four blocks through the rounds side by side, as sixteen separate variables, so that the processor has four independent dependency chains and the whole state stays in registers. Callers that process many blocks, such as [`go-encryptions/xts`](https://github.com/go-encryptions/xts), use it automatically.
+Times are per 4 KiB call, so lower is better. The batch path is 2.7x (encrypt) and 2.5x (decrypt) faster than the per-block path, 1.28x faster than Botan's NEON build when encrypting and level with it (11.92 vs 11.96 µs, inside the noise) when decrypting. On arm64 it is pure Go, with no assembly and no SIMD: `EncryptBlocks` and `DecryptBlocks` push four blocks through the rounds side by side, as sixteen separate variables, so that the processor has four independent dependency chains and the whole state stays in registers. Callers that process many blocks, such as [`go-encryptions/xts`](https://github.com/go-encryptions/xts), use it automatically.
+
+### amd64 (AVX2)
+
+On amd64 with AVX2, `EncryptBlocks` and `DecryptBlocks` run generated assembly: Botan's 8x32 layout (`serpent_simd8x32.cpp`: load, 4x4 transpose of 32-bit words, 32 rounds on four YMM registers, transpose, store), and a 16-block kernel that interleaves two independent groups instruction by instruction, because one group is a single dependency chain. `internal/genavx2` (its own module) generates the kernels with [go-asmgen](https://github.com/go-asmgen/asmgen) from the S-box statements of `sbox.go` themselves, so the pure-Go code stays the oracle; `go generate` rewrites `serpent_avx2_amd64.s` and CI fails if it is stale. CPU and OS support are probed at start-up; without AVX2, with the `purego` tag, and on other architectures the four-block Go loops run, with the same output.
+
+AMD Ryzen 9 7950X (Zen 4), linux/amd64, core 4 (`taskset -c 4`), Botan 3.14.1 built with clang 22.1.8, 4 KiB, MiB/s (higher is better), median of the interleaved rounds started at a 1-minute load of at most 2:
+
+| | per block | pure-Go batch of 4 (before) | **AVX2 batch (this)** | Botan AVX2 | Botan AVX-512 |
+|---|---|---|---|---|---|
+| Encrypt | 155 | 240 | **1312** | 934 | 1691 |
+| Decrypt | 162 | 230 | **1329** | 1078 | 2021 |
+
+The AVX2 batch is 1.40x the speed of Botan's AVX2 build when encrypting and 1.23x when decrypting, and 78 % of Botan's AVX-512 build (66 % when decrypting); the gap to AVX-512 is its three-operand `vpternlogd` and native rotates, which AVX2 lacks. The 8-block kernel alone runs at about 990 MiB/s (`BenchmarkKernels`), level with Botan AVX2; the 16-block one adds a third.
 
 Reproduce: `go test -c -o serpent.test .`, `go test -c -o botan.test ./internal/botanbench`, then `abbench --base ./serpent.test --head ./botan.test --max-load 8 -n 6 -- -test.bench . -test.run '^$'`. The two binaries are different packages, so run `benchstat` on `base.txt` and `head.txt` one at a time.
 
