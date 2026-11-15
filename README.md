@@ -76,6 +76,8 @@ AMD Ryzen 9 7950X (Zen 4), linux/amd64, core 4 (`taskset -c 4`), Botan 3.14.1 bu
 
 The AVX2 batch is 1.40x the speed of Botan's AVX2 build when encrypting and 1.23x when decrypting, and 78 % of Botan's AVX-512 build (66 % when decrypting); the gap to AVX-512 is its three-operand `vpternlogd` and native rotates, which AVX2 lacks. The 8-block kernel alone runs at about 990 MiB/s (`BenchmarkKernels`), level with Botan AVX2; the 16-block one adds a third.
 
+With AVX-512F the dispatcher goes AVX-512 > AVX2 > Go: kernels of 16, 32 and 48 blocks per chunk (one ZMM register holds one state word of 16 blocks), whose S-boxes are Botan's `vpternlogd` tables (one instruction per three-input term; `internal/convbotan` converts them, a test proves them equal to the Go S-boxes) with the native `vprold` rotate. Same machine and method, 7 rounds all at load below 1: **2360 MiB/s encrypting and 2689 decrypting, against 1696 and 2030 for Botan's AVX-512 build (1.39x and 1.32x)**.
+
 Reproduce: `go test -c -o serpent.test .`, `go test -c -o botan.test ./internal/botanbench`, then `abbench --base ./serpent.test --head ./botan.test --max-load 8 -n 6 -- -test.bench . -test.run '^$'`. The two binaries are different packages, so run `benchstat` on `base.txt` and `head.txt` one at a time.
 
 ## License
