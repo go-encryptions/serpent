@@ -136,8 +136,9 @@ func checkKeySizes(t *testing.T) {
 }
 
 // A buffer larger than one call to the kernels (64 KiB on amd64) is split
-// into several; 4209 blocks is 263 chunks of 16 (256 in the first call, 7 in
-// the second) and one block for the portable loop.
+// into several; 4209 blocks is more than one call's worth on every kernel
+// (85 chunks of 48 blocks with AVX-512, 256 of 16 with AVX2), with a tail for
+// the smaller kernels and the portable loop.
 func TestBulkLargeBuffer(t *testing.T) { eachVariant(t, checkLargeBuffer) }
 
 func checkLargeBuffer(t *testing.T) {
