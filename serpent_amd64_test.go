@@ -5,7 +5,41 @@ package serpent
 import (
 	"bytes"
 	"testing"
+	"unsafe"
 )
+
+// realAVX2 and realAVX512 are what the processor reports. Where it lacks a
+// feature, the gate is forced on and the kernels are Go stand-ins, so that the
+// dispatch in bulkBlocks (plain Go) runs, and is covered, on every machine;
+// only the one-line kernel calls need the hardware, and the TestKernels* tests
+// skip without it.
+var realAVX2, realAVX512 = useAVX2, useAVX512
+
+// standIn is a kernel in Go: n chunks of blocks blocks, one block at a time.
+func standIn(dec bool, blocks int) kernFn {
+	return func(rk *uint32, dst, src *byte, n int) {
+		c := &serpentCipher{rk: *(*[4 * (rounds + 1)]uint32)(unsafe.Pointer(rk))}
+		total := n * blocks * BlockSize
+		d, s := unsafe.Slice(dst, total), unsafe.Slice(src, total)
+		for o := 0; o < total; o += BlockSize {
+			if dec {
+				c.Decrypt(d[o:], s[o:])
+			} else {
+				c.Encrypt(d[o:], s[o:])
+			}
+		}
+	}
+}
+
+func init() {
+	pair := func(blocks int) kernPair { return kernPair{standIn(false, blocks), standIn(true, blocks)} }
+	if !realAVX2 {
+		kern.avx2x8, kern.avx2x16, useAVX2 = pair(8), pair(16), true
+	}
+	if !realAVX512 {
+		kern.avx512x16, kern.avx512x32, kern.avx512x48, useAVX512 = pair(16), pair(32), pair(48), true
+	}
+}
 
 // withGates runs f with the vector kernels on or off, restoring the gates.
 func withGates(avx512, avx2 bool, f func()) {
@@ -15,11 +49,14 @@ func withGates(avx512, avx2 bool, f func()) {
 	f()
 }
 
-// The variants of bulk_test.go: AVX-512 off (AVX2 only) and both off (pure
-// Go), on top of the default (everything the CPU has).
+// The variants of bulk_test.go: AVX-512 off (AVX2 only), AVX2 off (AVX-512
+// only, the CPU that has the one and not the other, or the tail of a buffer
+// that the 16-block AVX-512 chunks leave to pure Go) and both off (pure Go),
+// on top of the default (everything the CPU has).
 func init() {
 	variants = append(variants,
 		variant{"avx2-only", func(f func()) { withGates(false, true, f) }},
+		variant{"avx512-only", func(f func()) { withGates(true, false, f) }},
 		variant{"pure-go", func(f func()) { withGates(false, false, f) }},
 	)
 }
@@ -68,7 +105,6 @@ func TestBulkGatesOffFallBack(t *testing.T) {
 // bulkBlocks must report exactly the bytes it did. With AVX2 only: 16-block
 // chunks, then one 8-block chunk.
 func TestBulkReportsWhatItDidAVX2(t *testing.T) {
-	skipWithoutAVX2(t)
 	c := testCipher(t, 24)
 	withGates(false, true, func() {
 		for n, want := range map[int]int{0: 0, 7: 0, 8: 8, 15: 8, 16: 16, 23: 16, 24: 24, 33: 32, 40: 40, 47: 40} {
@@ -85,13 +121,30 @@ func TestBulkReportsWhatItDidAVX2(t *testing.T) {
 // With AVX-512 (and AVX2 below it): 48-, 32- and 16-block chunks, then the
 // AVX2 kernels take what is left of 8 or more blocks.
 func TestBulkReportsWhatItDidAVX512(t *testing.T) {
-	skipWithoutAVX512(t)
 	c := testCipher(t, 24)
 	withGates(true, true, func() {
 		for n, want := range map[int]int{
 			0: 0, 7: 0, 8: 8 * boolInt(useAVX2), 15: 8 * boolInt(useAVX2),
 			16: 16, 31: 16 + 8*boolInt(useAVX2), 32: 32, 47: 32 + 8*boolInt(useAVX2),
 			48: 48, 63: 48 + 8*boolInt(useAVX2), 64: 64, 96: 96,
+		} {
+			src := make([]byte, 16*n)
+			for _, dec := range []bool{false, true} {
+				if got := c.bulkBlocks(make([]byte, len(src)), src, dec); got != 16*want {
+					t.Errorf("%d blocks dec=%v: did %d bytes, want %d", n, dec, got, 16*want)
+				}
+			}
+		}
+	})
+}
+
+// With AVX-512 and no AVX2: 48-, 32- and 16-block chunks, and what is left of
+// fewer than 16 blocks is not touched, since no AVX2 kernel takes it.
+func TestBulkReportsWhatItDidAVX512Only(t *testing.T) {
+	c := testCipher(t, 24)
+	withGates(true, false, func() {
+		for n, want := range map[int]int{
+			0: 0, 7: 0, 8: 0, 15: 0, 16: 16, 31: 16, 32: 32, 47: 32, 48: 48, 63: 48, 64: 64, 96: 96,
 		} {
 			src := make([]byte, 16*n)
 			for _, dec := range []bool{false, true} {
@@ -164,8 +217,8 @@ func TestHasFeaturesStable(t *testing.T) {
 			t.Fatal("a feature probe changed its answer")
 		}
 	}
-	if useAVX2 != first2 || useAVX512 != first512 {
-		t.Fatalf("gates (%v, %v) differ from probes (%v, %v)", useAVX2, useAVX512, first2, first512)
+	if realAVX2 != first2 || realAVX512 != first512 {
+		t.Fatalf("gates (%v, %v) differ from probes (%v, %v)", realAVX2, realAVX512, first2, first512)
 	}
 }
 

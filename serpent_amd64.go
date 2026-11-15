@@ -49,6 +49,29 @@ var (
 	useAVX512 = hasAVX512F()
 )
 
+// kernFn is the signature of every kernel above. kern holds them, so that the
+// dispatch below is plain Go that the tests run against Go stand-ins on a
+// processor that lacks the instructions: only the call itself, one line, needs
+// the hardware.
+type kernFn func(rk *uint32, dst, src *byte, n int)
+
+type kernPair struct{ enc, dec kernFn }
+
+func (p kernPair) pick(dec bool) kernFn {
+	if dec {
+		return p.dec
+	}
+	return p.enc
+}
+
+var kern = struct{ avx2x8, avx2x16, avx512x16, avx512x32, avx512x48 kernPair }{
+	kernPair{encryptBlocksAVX2x8, decryptBlocksAVX2x8},
+	kernPair{encryptBlocksAVX2x16, decryptBlocksAVX2x16},
+	kernPair{encryptBlocksAVX512x16, decryptBlocksAVX512x16},
+	kernPair{encryptBlocksAVX512x32, decryptBlocksAVX512x32},
+	kernPair{encryptBlocksAVX512x48, decryptBlocksAVX512x48},
+}
+
 // At most maxBytes per kernel call: assembly without a frame cannot be
 // preempted, so a huge buffer in one call would hold up the garbage
 // collector's stop-the-world for its whole duration.
@@ -68,25 +91,13 @@ func (c *serpentCipher) bulkBlocks(dst, src []byte, dec bool) int {
 			switch {
 			case rest >= 48*BlockSize:
 				n := rest / (48 * BlockSize)
-				if dec {
-					decryptBlocksAVX512x48(rk, d, s, n)
-				} else {
-					encryptBlocksAVX512x48(rk, d, s, n)
-				}
+				kern.avx512x48.pick(dec)(rk, d, s, n)
 				done += n * 48 * BlockSize
 			case rest >= 32*BlockSize:
-				if dec {
-					decryptBlocksAVX512x32(rk, d, s, 1)
-				} else {
-					encryptBlocksAVX512x32(rk, d, s, 1)
-				}
+				kern.avx512x32.pick(dec)(rk, d, s, 1)
 				done += 32 * BlockSize
 			default:
-				if dec {
-					decryptBlocksAVX512x16(rk, d, s, 1)
-				} else {
-					encryptBlocksAVX512x16(rk, d, s, 1)
-				}
+				kern.avx512x16.pick(dec)(rk, d, s, 1)
 				done += 16 * BlockSize
 			}
 		}
@@ -96,19 +107,11 @@ func (c *serpentCipher) bulkBlocks(dst, src []byte, dec bool) int {
 			rest := min(len(src)-done, maxBytes)
 			d, s := &dst[done], &src[done]
 			if n := rest / (16 * BlockSize); n > 0 {
-				if dec {
-					decryptBlocksAVX2x16(rk, d, s, n)
-				} else {
-					encryptBlocksAVX2x16(rk, d, s, n)
-				}
+				kern.avx2x16.pick(dec)(rk, d, s, n)
 				done += n * 16 * BlockSize
 				continue
 			}
-			if dec {
-				decryptBlocksAVX2x8(rk, d, s, 1)
-			} else {
-				encryptBlocksAVX2x8(rk, d, s, 1)
-			}
+			kern.avx2x8.pick(dec)(rk, d, s, 1)
 			done += 8 * BlockSize
 		}
 	}
