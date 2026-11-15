@@ -3,7 +3,7 @@ module github.com/go-encryptions/serpent/internal/genavx2
 go 1.27.3
 
 require (
-	github.com/go-asmgen/asmgen v0.25.0
+	github.com/go-asmgen/asmgen v0.26.0
 	github.com/spf13/cobra v1.10.2
 )
 
