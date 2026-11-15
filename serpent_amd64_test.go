@@ -15,11 +15,14 @@ func withGates(avx512, avx2 bool, f func()) {
 	f()
 }
 
-// The variants of bulk_test.go: AVX-512 off (AVX2 only) and both off (pure
-// Go), on top of the default (everything the CPU has).
+// The variants of bulk_test.go: AVX-512 off (AVX2 only), AVX2 off (AVX-512
+// only, the CPU that has the one and not the other, or the tail of a buffer
+// that the 16-block AVX-512 chunks leave to pure Go) and both off (pure Go),
+// on top of the default (everything the CPU has).
 func init() {
 	variants = append(variants,
 		variant{"avx2-only", func(f func()) { withGates(false, true, f) }},
+		variant{"avx512-only", func(f func()) { withGates(true, false, f) }},
 		variant{"pure-go", func(f func()) { withGates(false, false, f) }},
 	)
 }
@@ -92,6 +95,25 @@ func TestBulkReportsWhatItDidAVX512(t *testing.T) {
 			0: 0, 7: 0, 8: 8 * boolInt(useAVX2), 15: 8 * boolInt(useAVX2),
 			16: 16, 31: 16 + 8*boolInt(useAVX2), 32: 32, 47: 32 + 8*boolInt(useAVX2),
 			48: 48, 63: 48 + 8*boolInt(useAVX2), 64: 64, 96: 96,
+		} {
+			src := make([]byte, 16*n)
+			for _, dec := range []bool{false, true} {
+				if got := c.bulkBlocks(make([]byte, len(src)), src, dec); got != 16*want {
+					t.Errorf("%d blocks dec=%v: did %d bytes, want %d", n, dec, got, 16*want)
+				}
+			}
+		}
+	})
+}
+
+// With AVX-512 and no AVX2: 48-, 32- and 16-block chunks, and what is left of
+// fewer than 16 blocks is not touched, since no AVX2 kernel takes it.
+func TestBulkReportsWhatItDidAVX512Only(t *testing.T) {
+	skipWithoutAVX512(t)
+	c := testCipher(t, 24)
+	withGates(true, false, func() {
+		for n, want := range map[int]int{
+			0: 0, 7: 0, 8: 0, 15: 0, 16: 16, 31: 16, 32: 32, 47: 32, 48: 48, 63: 48, 64: 64, 96: 96,
 		} {
 			src := make([]byte, 16*n)
 			for _, dec := range []bool{false, true} {
